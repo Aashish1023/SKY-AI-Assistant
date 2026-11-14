@@ -1,10 +1,15 @@
-"""Sky entry point."""
+"""Sky entry point.
+
+    python main.py            open the Sky window
+    python main.py --check    run the startup health check, print the result and exit
+"""
 from __future__ import annotations
 
+import argparse
 import sys
 
 from app.ai.model_manager import ModelManager, Severity
-from app.core.config import get_paths, load_config
+from app.core.config import SkyConfig, get_paths, load_config
 from app.utils.logger import (
     LOG_FILE_NAME,
     get_logger,
@@ -14,7 +19,43 @@ from app.utils.logger import (
 )
 
 
-def main() -> int:
+def run_health_check(config: SkyConfig) -> int:
+    """Check Ollama, the model, RAM and disk; log the findings. Returns 0 if Sky can chat."""
+    log = get_logger("main")
+    manager = ModelManager(config.ollama)
+    try:
+        report = manager.check_health()
+    finally:
+        manager.close()
+
+    system = report.system
+    log.info(
+        "System: %s | %s cores / %s threads | RAM %.1f GB total, %.1f GB free | disk %.1f GB free",
+        system.os_description,
+        system.physical_cores,
+        system.logical_cores,
+        system.ram_total_gb,
+        system.ram_available_gb,
+        system.disk_free_gb,
+    )
+    log_by_severity = {Severity.OK: log.info, Severity.WARNING: log.warning, Severity.ERROR: log.error}
+    for check in report.checks:
+        log_by_severity[check.severity](check.message)
+
+    if report.ready:
+        log.info("Sky is ready to chat.")
+    else:
+        log.error("Sky cannot chat yet. Fix the errors above and run it again.")
+    return 0 if report.ready else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="sky", description="Sky, a local AI desktop assistant.")
+    parser.add_argument(
+        "--check", action="store_true", help="run the startup health check and exit (no window)"
+    )
+    args = parser.parse_args(argv)
+
     paths = get_paths()
 
     # 1) Start logging with safe defaults first, so problems found while
@@ -38,39 +79,18 @@ def main() -> int:
     log.info("Config file: %s", paths.config_file)
     log.info("Log file:    %s", paths.log_dir / LOG_FILE_NAME)
 
-    # 3) Health check: can Sky talk to its local AI model?
-    manager = ModelManager(config.ollama)
     try:
-        report = manager.check_health()
+        if args.check:
+            return run_health_check(config)
+        try:
+            from app.ui.app import run_gui
+        except ImportError as exc:
+            log.error("The window needs PySide6, which could not be loaded: %s", exc)
+            print("Could not load the window library (PySide6). Run: pip install -r requirements.txt")
+            return 1
+        return run_gui(config)
     finally:
-        manager.close()
-
-    system = report.system
-    log.info(
-        "System: %s | %s cores / %s threads | RAM %.1f GB total, %.1f GB free | disk %.1f GB free",
-        system.os_description,
-        system.physical_cores,
-        system.logical_cores,
-        system.ram_total_gb,
-        system.ram_available_gb,
-        system.disk_free_gb,
-    )
-
-    log_by_severity = {
-        Severity.OK: log.info,
-        Severity.WARNING: log.warning,
-        Severity.ERROR: log.error,
-    }
-    for check in report.checks:
-        log_by_severity[check.severity](check.message)
-
-    if report.ready:
-        log.info("Sky is ready to chat. (The chat window arrives in step 1.6.)")
-    else:
-        log.error("Sky cannot chat yet. Fix the errors above and run it again.")
-
-    shutdown_logging()
-    return 0 if report.ready else 1
+        shutdown_logging()
 
 
 if __name__ == "__main__":

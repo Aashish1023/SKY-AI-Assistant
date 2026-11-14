@@ -328,14 +328,20 @@ def test_a_handler_can_submit_the_next_question_when_idle(events, recorder):
     backend = FakeBackend(tokens=("ok",))
     assistant = make(events, backend)
     fired, results = [], []
+    handler_done = threading.Event()
 
     def on_idle(event):
         if event.state is AssistantState.IDLE and not fired:
             fired.append(True)  # set BEFORE submitting: the follow-up's own idle event comes quickly
             results.append(assistant.submit("follow-up"))
+            handler_done.set()
 
     events.subscribe(StateChanged, on_idle)
-    ask(assistant, "first")  # waits for the whole chain, including the follow-up
+    ask(assistant, "first")
+    # The handler runs on the answer thread. The follow-up can finish before the handler has
+    # recorded its result, so wait for the handler itself, then for the whole chain to settle.
+    assert handler_done.wait(WAIT)
+    assert assistant.wait_until_idle(WAIT)
 
     assert results == [True]
     assert len(backend.calls) == 2
