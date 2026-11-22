@@ -44,7 +44,7 @@ class ChatView(QTextEdit):
         self._sky_message_open = False
 
         self._user_label = _format(COLORS["muted"], bold=True, point_size=8.5, letter_spacing=130)
-        self._sky_label = _format(COLORS["cyan"], bold=True, point_size=8.5, letter_spacing=130)
+        self._sky_label = _format(COLORS["accent"], bold=True, point_size=8.5, letter_spacing=130)
         self._user_text = _format(COLORS["user"])
         self._sky_text = _format(COLORS["text"])
         self._notice_formats = {
