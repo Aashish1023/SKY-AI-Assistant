@@ -1,4 +1,6 @@
 """Tests for the theme, the orb and the transcript view."""
+import time
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -8,7 +10,7 @@ from PySide6.QtWidgets import QWidget  # noqa: E402
 
 from app.core.events import AssistantState  # noqa: E402
 from app.ui.chat_view import ChatView  # noqa: E402
-from app.ui.orb import FRAME_INTERVAL_MS, AssistantOrb  # noqa: E402
+from app.ui.orb import BLINK_SECONDS, EYE_OPENNESS, FRAME_INTERVAL_MS, PUPIL_HALF_WIDTH, AssistantOrb  # noqa: E402
 from app.ui.theme import COLORS, build_stylesheet  # noqa: E402
 
 
@@ -16,8 +18,24 @@ from app.ui.theme import COLORS, build_stylesheet  # noqa: E402
 def test_stylesheet_uses_the_palette():
     css = build_stylesheet()
 
-    assert COLORS["cyan"] in css and COLORS["bg"] in css
+    assert COLORS["accent"] in css and COLORS["bg"] in css
     assert css.count("{") == css.count("}")
+
+
+def _rgb(hex_color):
+    return tuple(int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
+
+
+@pytest.mark.parametrize("key", ["accent", "accent_hover", "accent2", "accent_dim", "border", "user", "text"])
+def test_palette_is_red_not_blue(key):
+    red, _green, blue = _rgb(COLORS[key])
+
+    assert red > blue, f"{key} ({COLORS[key]}) should lean red, not blue"
+
+
+def test_errors_are_distinguishable_from_the_red_accent():
+    assert COLORS["error"] != COLORS["accent"]
+    assert _rgb(COLORS["error"])[1] > _rgb(COLORS["accent"])[1] + 50  # more green: orange, not red
 
 
 def test_stylesheet_is_accepted_by_qt_without_warnings(qapp):
@@ -77,6 +95,96 @@ def test_orb_draws_something_for_every_state(qapp):
         orb.set_state(state)
         image = orb.grab().toImage()
         assert image.pixelColor(80, 80).alpha() > 0  # the glowing core is painted at the centre
+
+
+def test_pupil_dilates_when_thinking_and_narrows_again_when_idle(qapp):
+    orb = AssistantOrb()
+    assert orb.pupil_half_width == PUPIL_HALF_WIDTH[AssistantState.IDLE]
+
+    orb.set_state(AssistantState.THINKING)
+    for _ in range(40):
+        orb._last_tick -= 0.05
+        orb._tick()
+    assert orb.pupil_half_width == pytest.approx(PUPIL_HALF_WIDTH[AssistantState.THINKING], abs=1.0)
+
+    orb.set_state(AssistantState.IDLE)
+    for _ in range(40):
+        orb._last_tick -= 0.05
+        orb._tick()
+    assert orb.pupil_half_width == pytest.approx(PUPIL_HALF_WIDTH[AssistantState.IDLE], abs=1.0)
+
+
+def test_pupil_changes_smoothly_not_in_one_jump(qapp):
+    orb = AssistantOrb()
+    orb.set_state(AssistantState.THINKING)
+    orb._last_tick -= 0.033
+
+    orb._tick()  # a single frame
+
+    idle, thinking = PUPIL_HALF_WIDTH[AssistantState.IDLE], PUPIL_HALF_WIDTH[AssistantState.THINKING]
+    assert idle < orb.pupil_half_width < thinking
+
+
+def test_eye_is_more_open_when_alert_than_when_relaxed(qapp):
+    assert EYE_OPENNESS[AssistantState.THINKING] > EYE_OPENNESS[AssistantState.IDLE]
+
+
+def test_a_blink_closes_the_eye_and_then_opens_it_again(qapp):
+    orb = AssistantOrb()
+    resting = orb.eye_openness
+
+    orb.blink()
+    orb._blink_start = time.monotonic() - BLINK_SECONDS / 2  # halfway through the blink
+    orb._tick()
+    assert orb.eye_openness < resting * 0.2  # nearly shut
+
+    orb._blink_start = time.monotonic() - BLINK_SECONDS * 2  # long finished
+    orb._tick()
+    assert orb._blink_start is None
+    assert orb.eye_openness == pytest.approx(resting, abs=0.02)
+
+
+def test_idle_eye_blinks_by_itself_after_a_while(qapp):
+    orb = AssistantOrb()
+    orb._next_blink = time.monotonic() - 1  # a blink is overdue
+
+    orb._tick()
+
+    assert orb._blink_start is not None
+
+
+def test_no_blinking_while_concentrating(qapp):
+    orb = AssistantOrb()
+    orb.set_state(AssistantState.THINKING)
+    orb._next_blink = time.monotonic() - 1
+
+    orb._tick()
+
+    assert orb._blink_start is None
+
+
+def test_timer_slows_down_again_once_the_eye_has_settled(qapp):
+    orb = AssistantOrb()
+    orb.set_state(AssistantState.THINKING)
+    orb.set_state(AssistantState.IDLE)
+    assert orb._timer.interval() == FRAME_INTERVAL_MS[AssistantState.THINKING]  # still moving: fast frames
+
+    for _ in range(60):
+        orb._last_tick -= 0.05
+        orb._tick()
+        orb._next_blink = time.monotonic() + 100  # keep this test about the pupil, not blinking
+
+    assert orb._timer.interval() == FRAME_INTERVAL_MS[AssistantState.IDLE]  # settled: back to slow frames
+
+
+def test_the_iris_is_painted_red(qapp):
+    orb = AssistantOrb()
+    orb.resize(160, 160)
+    image = orb.grab().toImage()
+
+    colour = image.pixelColor(80 + 32, 80)  # a point on the iris, right of the pupil
+
+    assert colour.red() > colour.blue() + 40
 
 
 # ------------------------------------------------------------------ chat view
